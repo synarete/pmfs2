@@ -23,7 +23,7 @@ See [pmfs on github](https://github.com/linux-pmfs/pmfs) for more details.
 ## How to
 
 ### Setup (fedora)
-- OS: Fedora31 (VM)
+- OS: Fedora32 (VM)
 - Memory size: 10G
 - Storage size: 20G
 - CPUs: 8
@@ -31,11 +31,11 @@ See [pmfs on github](https://github.com/linux-pmfs/pmfs) for more details.
 
 ```
   $ uname -srpm
-  Linux 5.3.11-300.fc31.x86_64 x86_64 x86_64
+  Linux 5.7.8-200.fc32.x86_64 x86_64 x86_64
 ```
 
 ### Preparations (as root):
-Install extra packages:
+Install extra packages (some are optional):
 ```
   $ dnf install -y kernel-devel kernel-headers
   $ dnf groupinstall -y "Development Tools"
@@ -65,9 +65,9 @@ Create ZUFS source code development environment:
 ```
   $ mkdir -p zufs
   $ cd zufs
-  $ git clone https://github.com/NetApp/zufs-zuf ./zuf
-  $ git clone https://github.com/NetApp/zufs-zus ./zus
-  $ git clone https://github.com/sagimnl/pmfs2 ./zus/fs/pmfs2
+  $ git clone --branch upstream-5.4 https://github.com/NetApp/zufs-zuf ./zuf
+  $ git clone --branch upstream https://github.com/NetApp/zufs-zus ./zus
+  $ git clone --branch upstream https://github.com/sagimnl/pmfs2 ./zus/fs/pmfs2
 ```
 
 Build zuf kernel module:
@@ -127,11 +127,13 @@ low-latency I/O. This is done via **ZUFS** framework. On an 8-cores VM you
 should expect staggering performance:
 
 ```
-  $ ${ZUFS_HOME}/zus/fs/pmfs2/fio4pmfs2.sh /mnt/pmfs2/
-  Jobs=1 BS=64k
+  $ fio --numjobs=1 --bs=4K --directory=/mnt/pmfs2 --name=pmfs2 \
+        --size=64M --fallocate=none -rw=readwrite --rwmixread=70 \
+	--ioengine=psync --sync=1 --direct=1 --time_based       \
+	--runtime=20 --thinktime=0 --norandommap --group_reporting
   ...
-  READ: bw=3771MiB/s (3954MB/s), 3771MiB/s-3771MiB/s
-  WRITE: bw=1618MiB/s (1696MB/s), 1618MiB/s-1618MiB/s
+  READ: bw=5174MiB/s (5425MB/s), 5174MiB/s-5174MiB/s
+  WRITE: bw=2217MiB/s (2324MB/s), 2217MiB/s-2217MiB/s
   ...
 
 ```

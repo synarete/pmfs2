@@ -136,9 +136,6 @@ static inline void _root_zii_fini(struct zus_sb_info *sbi)
 	}
 }
 
-/*
- * Require no more then single device which is associated with active CPU
- */
 static int _verify_pmem(struct zus_sb_info *zsbi)
 {
 	int i, nnodes;
@@ -166,7 +163,7 @@ static int _verify_pmem(struct zus_sb_info *zsbi)
 		}
 
 		memcpy(&cpuset, &numa_map->cpu_set_per_node[mdi->nid],
-			sizeof(cpuset));
+		       sizeof(cpuset));
 		if (!CPU_COUNT(&cpuset)) {
 			pmfs2_warn("no active CPU on nodeid=%d\n", mdi->nid);
 			return -EINVAL;
@@ -217,6 +214,7 @@ static int pmus_sbi_init(struct zus_sb_info *zsbi, struct zufs_mount_info *zmi)
 
 	zsbi->z_root->zi = PZI(root_pi);
 	zmi->s_blocksize_bits = PMFS2_BLOCK_SHIFT;
+	zmi->falloc_sup = PMFS2_FALLOC_SUP;
 	zmi->fs_caps = ZUFS_FSC_NIO_READS;
 	zmi->fs_caps |= ZUFS_FSC_NIO_WRITES;
 	return 0;
@@ -252,19 +250,19 @@ static inline void _set_pi_from_zi(struct pmfs2_inode *pi, struct zus_inode *zi)
 		pi->i_rdev = zi->i_rdev;
 }
 
-static struct zus_inode_info *
-pmus_new_inode(struct zus_sb_info *zsbi, void *app_ptr,
-	       struct zufs_ioc_new_inode *zni)
+static int pmus_new_inode(struct zus_sb_info *zsbi, void *app_ptr,
+			  struct zufs_ioc_new_inode *zni)
 {
 	struct zus_inode *zi = &zni->zi;
 	struct zus_inode_info *dir_zii = zni->dir_ii;
 	struct pmfs2_inode *pi;
 	char *symname = NULL;
 	struct zus_inode_info *zii = NULL;
+	int err = 0;
 
 	zii = _zii_alloc(zsbi);
 	if (unlikely(!zii))
-		return NULL;
+		return -ENOMEM;
 
 	if (zi_islnk(zi))
 		symname = (zi->i_size >= sizeof(zi->i_symlink)) ?
@@ -273,6 +271,7 @@ pmus_new_inode(struct zus_sb_info *zsbi, void *app_ptr,
 	pi = pmfs2_pi_new(ZSB(zsbi), zi_isdir(zi),
 			  zi_ino(dir_zii->zi), symname);
 	if (IS_ERR(pi)) {
+		err = (int)PTR_ERR(pi);
 		_zii_free(zii);
 		zii = NULL;
 		goto out;
@@ -288,7 +287,8 @@ pmus_new_inode(struct zus_sb_info *zsbi, void *app_ptr,
 	pmfs2_dbg_vfs("[%ld] parent=0x%lx\n",
 		      zi_ino(zii->zi), zi_ino(dir_zii->zi));
 out:
-	return zii;
+	zni->zus_ii = zii;
+	return err;
 }
 
 static void pmus_free_inode(struct zus_inode_info *zii)
@@ -464,35 +464,28 @@ static void _pmus_IO_ziom_init(struct zufs_ioc_IO *io, struct iov_iter *iter)
 	_zus_iom_init_4_ioc_io(&iter->iomb, NULL, io, ZUS_MAX_OP_SIZE);
 }
 
-static int _pmus_IO_finalize(struct zufs_ioc_IO *io, struct iov_iter *iter)
+static int _pmus_IO_finalize(struct zufs_ioc_IO *io, struct iov_iter *ii)
 {
-	_zus_iom_end(&iter->iomb);
-	io->ziom.iom_n = _zus_iom_len(&iter->iomb);
+	_zus_iom_end(&ii->iomb);
+	io->ziom.iom_n = _zus_iom_len(&ii->iomb);
 	io->hdr.out_len = sizeof(*io);
 	if (io->ziom.iom_n > ZUFS_WRITE_OP_SPACE)
 		io->hdr.out_len +=
 			(io->ziom.iom_n - ZUFS_WRITE_OP_SPACE) *
 			sizeof(__u64);
-	io->ziom.iomb = pmfs2_zalloc(sizeof(iter->iomb));
-	if (!io->ziom.iomb) {
-		iter->iomb.err = -ENOMEM;
-		if (iter->iomb.done)
-			iter->iomb.done(&iter->iomb);
-
-		return -ENOMEM;
-	}
-	*io->ziom.iomb = iter->iomb;
+	io->ziom.iomd = ii->iomb.iomd;
+	if (!io->ziom.iomd)
+		pmfs2_err("No 'done' iom_n=%d\n", (int)io->ziom.iom_n);
 	return -EZUFS_RETRY;
 }
 
 static void _pmus_IO_done(struct zufs_ioc_IO *io)
 {
-	if (io->ziom.iomb->done) {
-		io->ziom.iomb->err = io->hdr.err;
-		io->ziom.iomb->done(io->ziom.iomb);
-	}
-	pmfs2_free(io->ziom.iomb);
-	io->ziom.iomb = NULL;
+	if (io->ziom.iomd)
+		io->ziom.iomd->done(io->ziom.iomd, io->hdr.err);
+
+	else
+		pmfs2_err("No 'done' iom_n=%d\n", (int)io->ziom.iom_n);
 }
 
 static int _read(void *app_ptr, struct zufs_ioc_IO *io, struct kiocb *kiocb)
@@ -526,7 +519,7 @@ static int pmus_read(void *app_ptr, struct zufs_ioc_IO *io)
 		.ra = &io->ra,
 	};
 
-	if (io->ziom.iomb)
+	if (io->ziom.iomd)
 		_pmus_IO_done(io);
 
 	return _read(app_ptr, io, &kiocb);
@@ -540,7 +533,7 @@ static int pmus_pre_read(void *app_ptr, struct zufs_ioc_IO *io)
 		.ra = &io->ra,
 	};
 
-	if (io->ziom.iomb)
+	if (io->ziom.iomd)
 		_pmus_IO_done(io);
 
 	if (!io->ra.ra_pages)
@@ -560,7 +553,7 @@ static int pmus_write(void *app_ptr, struct zufs_ioc_IO *io)
 
 	kiocb.ki_flags = io->rw;
 
-	if (io->ziom.iomb)
+	if (io->ziom.iomd)
 		_pmus_IO_done(io);
 
 	ii.unmap = &io->wr_unmap;
@@ -592,7 +585,7 @@ static int pmus_get_block(struct zus_inode_info *zii,
 	struct super_block *sb = ZSB(zii->sbi);
 	bool retry_return = false;
 
-	if (get_block->ziom.iomb) {
+	if (get_block->ziom.iomd) {
 		retry_return = true;
 		_pmus_IO_done(get_block);
 	}
@@ -635,7 +628,7 @@ out:
 		return err;
 	}
 
-	_zus_iom_start(gbi.iomb, NULL, NULL);
+	_zus_iom_start(gbi.iomb, NULL);
 	_ziom_enc_t1_bn(gbi.iomb, gbi.bn, 0);
 	get_block->hdr.out_len = _ioc_IO_size(1);
 
@@ -650,9 +643,9 @@ static int pmus_put_block(struct zus_inode_info *zii,
 	gbi.rw = get_block->cookie;
 	gbi.bn = _zufs_iom_t1_bn(get_block->iom_e[0]);
 
-	if (unlikely(gbi.bn == ((ulong) -1)))
+	if (unlikely(gbi.bn == ((ulong) - 1)))
 		pmfs2_err("gbi.bn=0x%lx rw=0x%x val=0x%llx\n",
-			 gbi.bn, gbi.rw, get_block->iom_e[0]);
+			  gbi.bn, gbi.rw, get_block->iom_e[0]);
 	else if (likely(gbi.bn))
 		pmfs2_put_data_block(ZSB(zii->sbi), &gbi);
 
@@ -673,7 +666,7 @@ static int _get_multy(struct zus_inode_info *zii, struct zufs_ioc_IO *io)
 	if (io->rw & ZUFS_RW_MMAP)
 		return pmus_get_block(zii, io);
 
-	if (io->ziom.iomb)
+	if (io->ziom.iomd)
 		_pmus_IO_done(io);
 
 	iov_iter_init_single(&ii, NULL, io->hdr.len, &iov);
@@ -682,10 +675,10 @@ static int _get_multy(struct zus_inode_info *zii, struct zufs_ioc_IO *io)
 	if (io->rw & WRITE) {
 		ii.unmap = &io->wr_unmap;
 		ret = pmfs2_rw_get_multy_write(ZSB(io->zus_ii->sbi),
-					      ZVI(io->zus_ii), &kiocb, &ii);
+					       ZVI(io->zus_ii), &kiocb, &ii);
 	} else {
 		ret = pmfs2_rw_get_multy_read(ZSB(io->zus_ii->sbi),
-					     ZVI(io->zus_ii), &kiocb, &ii);
+					      ZVI(io->zus_ii), &kiocb, &ii);
 	}
 	if (unlikely(ret == -EZUFS_RETRY))
 		return _pmus_IO_finalize(io, &ii);
@@ -757,7 +750,7 @@ static int pmus_sync(struct zus_inode_info *zii,
 			    ioc_range->offset,
 			    ioc_range->offset + ioc_range->length,
 			    ioc_range->flags);
-	ioc_range->write_unmapped = 0;
+
 	return err;
 }
 
@@ -767,7 +760,7 @@ static int pmus_fallocate(struct zus_inode_info *zii,
 	struct iov_iter ii = {};
 	int err;
 
-	if (io->ziom.iomb)
+	if (io->ziom.iomd)
 		_pmus_IO_done(io);
 
 	_pmus_IO_ziom_init(io, &ii);
@@ -802,8 +795,8 @@ static int pmus_getxattr(struct zus_inode_info *zii,
 	ssize_t size;
 
 	size = pmfs2_getxattr(ZSB(zii->sbi), ZVI(zii), ioc_xattr->type,
-			     ioc_xattr->buf, ioc_xattr->buf,
-			     ioc_xattr->user_buf_size);
+			      ioc_xattr->buf, ioc_xattr->buf,
+			      ioc_xattr->user_buf_size);
 	if (unlikely(size < 0))
 		return size;
 

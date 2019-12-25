@@ -3,6 +3,11 @@
 #ifndef _PMFS2_DEF_H_
 #define _PMFS2_DEF_H_
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#include <fcntl.h>
+#include <unistd.h>
 #include <zus.h>
 #include "md_def.h"
 
@@ -29,6 +34,9 @@
 #define PMFS2_DIRENT_SIZE       16
 #define PMFS2_DIRENT_META_SIZE  12
 #define PMFS2_LINK_MAX          ZUFS_LINK_MAX
+
+#define PMFS2_FALLOC_SUP \
+	(FALLOC_FL_PUNCH_HOLE | ZUFS_FL_TRUNCATE)
 
 
 /* "on-pmem" data structures */

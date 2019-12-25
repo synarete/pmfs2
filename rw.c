@@ -168,7 +168,7 @@ ssize_t pmfs2_rw_get_multy_write(struct super_block *sb, struct inode *inode,
 	bool done_alloc = false;
 	int err = 0;
 
-	_zus_iom_start(&ii->iomb, NULL, NULL);
+	_zus_iom_start(&ii->iomb, NULL);
 
 	while (iov_iter_count(ii)) {
 		struct pmfs2_gbi gbi = {};
@@ -265,7 +265,7 @@ ssize_t pmfs2_rw_get_multy_read(struct super_block *sb, struct inode *inode,
 	if (unlikely(!iov_iter_count(ii) && !ra->ra_pages))
 		return 0;
 
-	_zus_iom_start(&ii->iomb, NULL, NULL);
+	_zus_iom_start(&ii->iomb, NULL);
 
 	while (iov_iter_count(ii)) {
 		struct pmfs2_gbi gbi = {};
