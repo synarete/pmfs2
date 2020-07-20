@@ -67,7 +67,7 @@ Create ZUFS source code development environment:
   $ cd zufs
   $ git clone --branch upstream-5.4 https://github.com/NetApp/zufs-zuf ./zuf
   $ git clone --branch upstream https://github.com/NetApp/zufs-zus ./zus
-  $ git clone --branch upstream https://github.com/sagimnl/pmfs2 ./zus/fs/pmfs2
+  $ git clone --branch upstream https://github.com/synarete/pmfs2 ./zus/fs/pmfs2
 ```
 
 Build zuf kernel module:
